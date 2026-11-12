@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COSMIC MAP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spline+Sans:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+<style>
+:root{--bg:#0d1520;--panel:#142033;--line:#27405f;--text:#e8e4d8;--mute:#93a3b8;--cov:#4fd1c5;--hit:#ffb454}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:15px/1.45 "Spline Sans",system-ui,sans-serif}
+#sky{position:absolute;inset:0}
+.bar{position:absolute;z-index:5;top:12px;left:12px;right:12px;display:flex;gap:8px;max-width:520px}
+.bar input{flex:1;min-width:0;padding:11px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit;font-size:16px;-webkit-appearance:none;appearance:none}
+.bar,.panel,button{touch-action:manipulation}
+button{padding:11px 16px;border-radius:10px;border:1px solid var(--line);background:var(--cov);color:#06201d;font:inherit;font-weight:600;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--hit);outline-offset:2px}
+.panel{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--line);padding:14px 16px;overflow:auto}
+@media(min-width:760px){.panel{top:68px;right:12px;width:340px;max-height:calc(100% - 84px);border-radius:12px}}
+@media(max-width:759px){.panel{left:0;right:0;bottom:0;max-height:42%;border-radius:14px 14px 0 0}.bar{max-width:none}}
+h1{font-size:17px;margin:0 0 2px}
+.note{color:var(--mute);font-size:13px;margin:0 0 10px}
+.demo{color:var(--hit)}
+label{display:flex;align-items:center;gap:8px;margin:6px 0}
+.dates{display:flex;gap:8px;margin:8px 0}
+.dates input{flex:1;min-width:0;padding:7px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+.row{display:block;width:100%;text-align:left;margin:6px 0;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-weight:400}
+.row.on{border-color:var(--hit)}
+.row small{display:block;color:var(--mute)}
+#msg{min-height:1.4em;margin:6px 0 0;color:var(--hit);font-size:13px}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<div id="sky"></div>
+
+<form class="bar" id="searchForm" role="search">
+  <input id="q" type="search" enterkeyhint="search" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Search" placeholder="Object name or coordinates, e.g. M 31 or 83.8 -5.4" autocomplete="off">
+  <button type="submit">Search</button>
+</form>
+
+<aside class="panel" aria-live="polite">
+  <h1>COSMIC MAP</h1>
+  <p class="note"><span class="demo">Demo data.</span> Fields below are generated for testing, not real SPHEREx observations.</p>
+  <label><input type="checkbox" id="covToggle" checked> Show observed fields</label>
+  <div class="dates">
+    <input type="date" id="d1" aria-label="From date" value="2025-05-01">
+    <input type="date" id="d2" aria-label="To date" value="2026-11-12">
+  </div>
+  <p id="msg"></p>
+  <div id="info"><p class="note">Click the map to list observations at that point.</p></div>
+</aside>
+
+<script>
+// ---------- Demo data (replace with real SPHEREx metadata JSON) ----------
+function seeded(s){return()=>(s=(s*16807)%2147483647)/2147483647}
+const rnd = seeded(7);
+const OBS = Array.from({length:260},(_,i)=>({
+  id:'DEMO-'+String(i+1).padStart(3,'0'),
+  ra:rnd()*360,
+  dec:Math.asin(rnd()*2-1)*180/Math.PI,
+  date:new Date(Date.UTC(2025,4,1)+rnd()*560*864e5).toISOString().slice(0,10),
+  r:2.5,
+  spectrum:'0.75–5 µm, 102 channels'
+}));
+
+// ---------- Helpers ----------
+const $ = id => document.getElementById(id);
+function sep(ra1,dec1,ra2,dec2){ // angular distance in degrees
+  const k=Math.PI/180, a=Math.sin((dec2-dec1)*k/2)**2+Math.cos(dec1*k)*Math.cos(dec2*k)*Math.sin((ra2-ra1)*k/2)**2;
+  return 2*Math.asin(Math.min(1,Math.sqrt(a)))/k;
+}
+const visible = () => OBS.filter(o => o.date>=$('d1').value && o.date<=$('d2').value);
+
+let aladin, covLayer, hitLayer;
+
+// ---------- Layers ----------
+function drawCoverage(){
+  covLayer.removeAll();
+  if($('covToggle').checked) visible().forEach(o => covLayer.add(A.circle(o.ra,o.dec,o.r)));
+}
+function highlight(o){
+  hitLayer.removeAll();
+  if(o) hitLayer.add(A.circle(o.ra,o.dec,o.r,{color:'#ffb454',lineWidth:3}));
+}
+
+// ---------- Click: list observations at point ----------
+function showAt(ra,dec){
+  const hits = visible().filter(o=>sep(ra,dec,o.ra,o.dec)<=o.r).sort((a,b)=>a.date.localeCompare(b.date));
+  const head = `<p class="note">Point: RA ${ra.toFixed(3)}°, Dec ${dec.toFixed(3)}°</p>`;
+  if(!hits.length){ $('info').innerHTML = head+'<p class="note">No observations here in the selected dates.</p>'; highlight(null); return; }
+  $('info').innerHTML = head + hits.map((o,i)=>
+    `<button class="row" data-i="${i}">${o.date} · ${o.id}<small>${o.spectrum}</small></button>`).join('');
+  $('info').querySelectorAll('.row').forEach(b=>b.onclick=()=>{
+    $('info').querySelectorAll('.row').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); highlight(hits[+b.dataset.i]);
+  });
+}
+
+// ---------- Search ----------
+['keydown','keyup','keypress'].forEach(ev=>$('q').addEventListener(ev,e=>e.stopPropagation()));
+$('searchForm').addEventListener('submit', e=>{
+  e.preventDefault();
+  const t=$('q').value.trim().replace(/[−–]/g,'-'); if(!t) return;
+  $('msg').textContent='';
+  const m=t.match(/^([+-]?\d+(?:\.\d+)?)[\s,;]+([+-]?\d+(?:\.\d+)?)$/);
+  if(m){
+    const ra=+m[1], dec=+m[2];
+    if(ra<0||ra>=360||dec<-90||dec>90){ $('msg').textContent='RA must be 0–360 and Dec −90…90 (degrees).'; return; }
+    aladin.gotoRaDec(ra,dec); aladin.setFoV(10);
+  } else {
+    aladin.gotoObject(t,{
+      success:()=>aladin.setFoV(5),
+      error:()=>{ $('msg').textContent='Object not found. Try another name or enter RA Dec in degrees.'; }
+    });
+  }
+});
+
+// ---------- Init ----------
+const hasGL2=()=>{try{return !!document.createElement('canvas').getContext('webgl2')}catch(e){return false}};
+if(typeof A==='undefined') $('msg').textContent='Sky map library did not load. Check your internet connection and open the page via http://, not as a plain file.';
+else if(!hasGL2()) $('msg').textContent='This browser has no WebGL2, which the sky map needs. Try the latest Chrome.';
+else A.init.then(()=>{
+  aladin = A.aladin('#sky',{survey:'P/DSS2/color',fov:90,target:'0 +0',
+    showGotoControl:false,showFullscreenControl:false,showReticle:false});
+  covLayer = A.graphicOverlay({color:'#4fd1c5',lineWidth:1});
+  hitLayer = A.graphicOverlay({color:'#ffb454',lineWidth:3});
+  aladin.addOverlay(covLayer); aladin.addOverlay(hitLayer);
+  drawCoverage();
+
+  // Map click: Aladin's own event first, mouse/touch fallback for browsers where it doesn't fire
+  let last=0;
+  const pick=(ra,dec)=>{ if(Date.now()-last<400) return; last=Date.now(); showAt(((ra%360)+360)%360,dec); };
+  aladin.on('click',e=>{ if(e && !e.isDragging && e.ra!=null) pick(e.ra,e.dec); });
+  const sky=$('sky'); let down=null;
+  const pt=e=>e.changedTouches?e.changedTouches[0]:e;
+  const start=e=>{const p=pt(e);down=[p.clientX,p.clientY]};
+  const end=e=>{
+    const p=pt(e); if(!down||Math.hypot(p.clientX-down[0],p.clientY-down[1])>6) return;
+    setTimeout(()=>{
+      const r=sky.getBoundingClientRect(), w=aladin.pix2world(p.clientX-r.left,p.clientY-r.top);
+      if(w) pick(w[0],w[1]);
+    },60);
+  };
+  sky.addEventListener('mousedown',start,true); sky.addEventListener('mouseup',end,true);
+  sky.addEventListener('touchstart',start,{capture:true,passive:true}); sky.addEventListener('touchend',end,{capture:true,passive:true});
+  ['covToggle','d1','d2'].forEach(id=>$(id).addEventListener('change',()=>{drawCoverage();highlight(null)}));
+});
+</script>
+</body>
+</html>
